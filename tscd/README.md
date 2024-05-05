@@ -44,7 +44,7 @@ accelerate launch train_tscd_distill_sd_wds.py \
 export MODEL_NAME="runwayml/stable-diffusion-v1-5"
 export OUTPUT_DIR="path/to/saved/model"
 
-CUDA_VISIBLE_DEVICES=5 accelerate launch train_tscd_distill_lora_sd_wds.py \
+accelerate launch train_tscd_distill_lora_sd_wds.py \
     --pretrained_teacher_model=$MODEL_NAME \
     --output_dir=$OUTPUT_DIR \
     --mixed_precision=fp16 \
