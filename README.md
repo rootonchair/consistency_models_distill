@@ -14,4 +14,4 @@ pip install diffusers["torch"] transformers accelerate
 - Start distill with [Trajectory Segmented Consistency Distillation-TSCD](tscd/README.md)
 
 ## Acknowledgments
-The code is based on [Diffuser's LCM training script](https://github.com/huggingface/diffusers/tree/main/examples/consistency_distillation)
+The training scripts are originally base on [Diffusers's LCM training script](https://github.com/huggingface/diffusers/tree/main/examples/consistency_distillation)
