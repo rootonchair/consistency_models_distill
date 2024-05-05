@@ -78,8 +78,6 @@ MIN_SIZE = 700  # ~960 for LAION, ideal: 1024 if the dataset contains large imag
 if is_wandb_available():
     import wandb
 
-# Will error if the minimal version of diffusers is not installed. Remove at your own risks.
-check_min_version("0.28.0.dev0")
 
 logger = get_logger(__name__)
 
