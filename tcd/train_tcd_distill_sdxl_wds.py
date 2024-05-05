@@ -60,6 +60,7 @@ from diffusers import (
     LCMScheduler,
     StableDiffusionXLPipeline,
     UNet2DConditionModel,
+    TCDScheduler
 )
 from diffusers.optimization import get_scheduler
 from diffusers.training_utils import resolve_interpolation_mode
@@ -245,7 +246,7 @@ def log_validation(vae, unet, args, accelerator, weight_dtype, step, name="targe
         args.pretrained_teacher_model,
         vae=vae,
         unet=unet,
-        scheduler=LCMScheduler.from_pretrained(args.pretrained_teacher_model, subfolder="scheduler"),
+        scheduler=TCDScheduler.from_pretrained(args.pretrained_teacher_model, subfolder="scheduler"),
         revision=args.revision,
         torch_dtype=weight_dtype,
     )
@@ -353,6 +354,30 @@ def get_predicted_original_sample(model_output, timesteps, sample, prediction_ty
     return pred_x_0
 
 
+def get_predicted_original_sample_tcd(model_output, timesteps, s_timesteps, sample, prediction_type, alphas, sigmas):
+    t_alphas = extract_into_tensor(alphas, timesteps, sample.shape)
+    t_sigmas = extract_into_tensor(sigmas, timesteps, sample.shape)
+
+    s_alphas = extract_into_tensor(alphas, s_timesteps, sample.shape)
+    s_sigmas = extract_into_tensor(sigmas, s_timesteps, sample.shape)
+
+    t_lambdas = torch.log(t_alphas) - torch.log(t_sigmas)
+    s_lambdas = torch.log(s_alphas) - torch.log(s_sigmas)
+
+    h = s_lambdas - t_lambdas
+
+    if prediction_type == "epsilon":
+        model_output = (sample - t_sigmas * model_output) / t_alphas
+        pred_x_0 = s_sigmas * sample / t_sigmas - s_alphas * (torch.exp(-h) - 1.0) * model_output
+    else:
+        raise ValueError(
+            f"Prediction type {prediction_type} is not supported; currently, `epsilon`, `sample`, and `v_prediction`"
+            f" are supported."
+        )
+
+    return pred_x_0
+
+
 # Based on step 4 in DDIMScheduler.step
 def get_predicted_noise(model_output, timesteps, sample, prediction_type, alphas, sigmas):
     alphas = extract_into_tensor(alphas, timesteps, sample.shape)
@@ -376,6 +401,15 @@ def extract_into_tensor(a, t, x_shape):
     b, *_ = t.shape
     out = a.gather(-1, t)
     return out.reshape(b, *((1,) * (len(x_shape) - 1)))
+
+
+def randint(low, high=None, size=None, device=None):
+    if high is None:
+        high = low
+        low = 0
+    if size is None:
+        size = low.shape if isinstance(low, torch.Tensor) else high.shape
+    return torch.randint(2**63 - 1, size=size, device=device) % (high - low) + low
 
 
 @torch.no_grad()
@@ -1310,15 +1344,10 @@ def main(args):
                 timesteps = start_timesteps - topk
                 timesteps = torch.where(timesteps < 0, torch.zeros_like(timesteps), timesteps)
 
-                # 3. Get boundary scalings for start_timesteps and (end) timesteps.
-                c_skip_start, c_out_start = scalings_for_boundary_conditions(
-                    start_timesteps, timestep_scaling=args.timestep_scaling_factor
-                )
-                c_skip_start, c_out_start = [append_dims(x, latents.ndim) for x in [c_skip_start, c_out_start]]
-                c_skip, c_out = scalings_for_boundary_conditions(
-                    timesteps, timestep_scaling=args.timestep_scaling_factor
-                )
-                c_skip, c_out = [append_dims(x, latents.ndim) for x in [c_skip, c_out]]
+                # 3. Sample end timestep from [0, timesteps]
+                end_index = randint(0, index+1, (bsz,), device=latents.device).long()
+                end_timesteps = solver.ddim_timesteps[end_index] - topk
+                end_timesteps = torch.where(end_timesteps < 0, torch.zeros_like(timesteps), end_timesteps)
 
                 # 4. Sample noise from the prior and add it to the latents according to the noise magnitude at each
                 # timestep (this is the forward diffusion process) [z_{t_{n + k}} in Algorithm 1]
@@ -1345,16 +1374,17 @@ def main(args):
                     added_cond_kwargs=encoded_text,
                 ).sample
 
-                pred_x_0 = get_predicted_original_sample(
+                pred_x_0 = get_predicted_original_sample_tcd(
                     noise_pred,
                     start_timesteps,
+                    end_timesteps,
                     noisy_model_input,
                     noise_scheduler.config.prediction_type,
                     alpha_schedule,
                     sigma_schedule,
                 )
 
-                model_pred = c_skip_start * noisy_model_input + c_out_start * pred_x_0
+                model_pred = pred_x_0
 
                 # 8. Compute the conditional and unconditional teacher model predictions to get CFG estimates of the
                 # predicted noise eps_0 and predicted original sample x_0, then run the ODE solver using these
@@ -1441,15 +1471,16 @@ def main(args):
                             encoder_hidden_states=prompt_embeds.float(),
                             added_cond_kwargs=encoded_text,
                         ).sample
-                    pred_x_0 = get_predicted_original_sample(
+                    pred_x_0 = get_predicted_original_sample_tcd(
                         target_noise_pred,
                         timesteps,
+                        end_timesteps,
                         x_prev,
                         noise_scheduler.config.prediction_type,
                         alpha_schedule,
                         sigma_schedule,
                     )
-                    target = c_skip * x_prev + c_out * pred_x_0
+                    target = pred_x_0
 
                 # 10. Calculate loss
                 if args.loss_type == "l2":

@@ -339,15 +339,6 @@ def append_dims(x, target_dims):
     return x[(...,) + (None,) * dims_to_append]
 
 
-# From LCMScheduler.get_scalings_for_boundary_condition_discrete
-def scalings_for_boundary_conditions(timestep, sigma_data=0.5, timestep_scaling=10.0):
-    scaled_timestep = timestep_scaling * timestep
-    c_skip = sigma_data**2 / (scaled_timestep**2 + sigma_data**2)
-    c_out = scaled_timestep / (scaled_timestep**2 + sigma_data**2) ** 0.5
-    # return c_skip, c_out
-    return torch.zeros_like(timestep), torch.ones_like(timestep)
-
-
 # Compare LCMScheduler.step, Step 4
 def get_predicted_original_sample(model_output, timesteps, sample, prediction_type, alphas, sigmas):
     alphas = extract_into_tensor(alphas, timesteps, sample.shape)
@@ -366,7 +357,7 @@ def get_predicted_original_sample(model_output, timesteps, sample, prediction_ty
 
     return pred_x_0
 
-# Compare LCMScheduler.step, Step 4
+
 def get_predicted_original_sample_tcd(model_output, timesteps, s_timesteps, sample, prediction_type, alphas, sigmas):
     t_alphas = extract_into_tensor(alphas, timesteps, sample.shape)
     t_sigmas = extract_into_tensor(sigmas, timesteps, sample.shape)
@@ -389,6 +380,7 @@ def get_predicted_original_sample_tcd(model_output, timesteps, s_timesteps, samp
         )
 
     return pred_x_0
+
 
 # Based on step 4 in DDIMScheduler.step
 def get_predicted_noise(model_output, timesteps, sample, prediction_type, alphas, sigmas):
@@ -413,6 +405,7 @@ def extract_into_tensor(a, t, x_shape):
     b, *_ = t.shape
     out = a.gather(-1, t)
     return out.reshape(b, *((1,) * (len(x_shape) - 1)))
+
 
 def randint(low, high=None, size=None, device=None):
     if high is None:
@@ -692,7 +685,7 @@ def parse_args():
         default=0,
         help="Proportion of image prompts to be replaced with empty strings. Defaults to 0 (no prompt replacement).",
     )
-    # ----Latent Consistency Distillation (LCD) Specific Arguments----
+    # ----Trajectory Consistency Distillation (TCD) Specific Arguments----
     parser.add_argument(
         "--w_min",
         type=float,
@@ -751,16 +744,6 @@ def parse_args():
         help=(
             "The batch size used when encoding (and decoding) images to latents (and vice versa) using the VAE."
             " Encoding or decoding the whole batch at once may run into OOM issues."
-        ),
-    )
-    parser.add_argument(
-        "--timestep_scaling_factor",
-        type=float,
-        default=10.0,
-        help=(
-            "The multiplicative timestep scaling factor used when calculating the boundary scalings for LCM. The"
-            " higher the scaling is, the lower the approximation error, but the default value of 10.0 should typically"
-            " suffice."
         ),
     )
     # ----Exponential Moving Average (EMA)----
@@ -1245,19 +1228,11 @@ def main(args):
                 
                 timesteps = start_timesteps - topk
                 timesteps = torch.where(timesteps < 0, torch.zeros_like(timesteps), timesteps)
+
+                # 3. Sample end timestep from [0, timesteps]
                 end_index = randint(0, index+1, (bsz,), device=latents.device).long()
                 end_timesteps = solver.ddim_timesteps[end_index] - topk
                 end_timesteps = torch.where(end_timesteps < 0, torch.zeros_like(timesteps), end_timesteps)
-
-                # 3. Get boundary scalings for start_timesteps and (end) timesteps.
-                c_skip_start, c_out_start = scalings_for_boundary_conditions(
-                    start_timesteps, timestep_scaling=args.timestep_scaling_factor
-                )
-                c_skip_start, c_out_start = [append_dims(x, latents.ndim) for x in [c_skip_start, c_out_start]]
-                c_skip, c_out = scalings_for_boundary_conditions(
-                    timesteps, timestep_scaling=args.timestep_scaling_factor
-                )
-                c_skip, c_out = [append_dims(x, latents.ndim) for x in [c_skip, c_out]]
 
                 # 4. Sample noise from the prior and add it to the latents according to the noise magnitude at each
                 # timestep (this is the forward diffusion process) [z_{t_{n + k}} in Algorithm 1]
@@ -1294,7 +1269,7 @@ def main(args):
                     sigma_schedule,
                 )
 
-                model_pred = c_skip_start * noisy_model_input + c_out_start * pred_x_0
+                model_pred = pred_x_0
 
                 # 8. Compute the conditional and unconditional teacher model predictions to get CFG estimates of the
                 # predicted noise eps_0 and predicted original sample x_0, then run the ODE solver using these
@@ -1385,7 +1360,7 @@ def main(args):
                         alpha_schedule,
                         sigma_schedule,
                     )
-                    target = c_skip * x_prev + c_out * pred_x_0
+                    target = pred_x_0
 
                 # 10. Calculate loss
                 if args.loss_type == "l2":

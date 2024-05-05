@@ -367,7 +367,6 @@ def get_predicted_original_sample(model_output, timesteps, sample, prediction_ty
     return pred_x_0
 
 
-# Compare LCMScheduler.step, Step 4
 def get_predicted_original_sample_tcd(model_output, timesteps, s_timesteps, sample, prediction_type, alphas, sigmas):
     t_alphas = extract_into_tensor(alphas, timesteps, sample.shape)
     t_sigmas = extract_into_tensor(sigmas, timesteps, sample.shape)
